@@ -1,0 +1,7 @@
+[
+{
+  "directory": "/home/oiram/program/aircrack/build",
+  "command": "/usr/bin/x86_64-linux-gnu-g++-7  -D_DEBUG  -g   -o CMakeFiles/aircrack.dir/main.cpp.o -c /home/oiram/program/aircrack/main.cpp",
+  "file": "/home/oiram/program/aircrack/main.cpp"
+}
+]
