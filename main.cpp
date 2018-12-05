@@ -86,7 +86,7 @@ int main()
 {
 	clear();
 	bool monitor_interface_added = false;
-    char cmd[512] = { 0 };
+    char cmd[513] = { 0 };
 
     // check software interface mode could be add
 	int iw_phy_status = 0;
