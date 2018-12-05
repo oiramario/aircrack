@@ -1,0 +1,11 @@
+wap -   bssid: BC:5F:F6:48:55:4A, power: -56, channel:  1, essid: gfny
+wap -   bssid: EC:26:CA:75:0A:DE, power: -58, channel:  1, essid: ct
+wap -   bssid: 34:96:72:15:F6:C3, power: -60, channel:  1, essid: yanlong
+station - mac: 38:53:9C:5C:9B:11, power: -21
+wap -   bssid: FC:D7:33:B9:91:F6, power: -61, channel:  1, essid: TP-LINK_91F6
+wap -   bssid: 20:6B:E7:41:D1:74, power: -67, channel:  1, essid: tiantian
+wap -   bssid: C4:36:55:EA:66:AA, power: -67, channel:  2, essid: XiaoYi
+wap -   bssid: 50:BD:5F:14:C9:71, power: -55, channel:  6, essid: TP-LINK_C971
+wap -   bssid: A8:6B:7C:6D:97:C8, power: -65, channel:  8, essid: Tong
+wap -   bssid: 08:10:7A:63:F8:E1, power: -66, channel: 11, essid: 302
+wap -   bssid: F4:83:CD:DB:36:75, power: -56, channel: 13, essid: WH-Tai Mi

